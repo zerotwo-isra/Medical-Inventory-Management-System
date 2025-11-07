@@ -1,0 +1,11 @@
+// CalculateTotalAmountTrigger
+
+trigger CalculateTotalAmountTrigger on Order_Item__c
+(after insert, after update, after delete, after undelete) {
+    CalculateTotalAmountHandler.calculateTotal(
+        Trigger.isInsert ? Trigger.new : null,
+        (Trigger.isUpdate || Trigger.isDelete) ? Trigger.old : null,
+        Trigger.isInsert, Trigger.isUpdate, Trigger.isDelete, Trigger.isUndelete
+    );
+}
+
