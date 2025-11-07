@@ -1,0 +1,108 @@
+//CalculateTotalAmountHandler
+
+public class CalculateTotalAmountHandler {
+
+    /**
+     * Recalculates Purchase Order totals based on related Order Items.
+     * NOTE: Adjust API names if yours differ:
+     * - Order_Item__c.Purchase_Order__c  (Master-Detail / Lookup to Purchase_Order__c)
+     * - Order_Item__c.Amount__c          (per-line amount)
+     * - Purchase_Order__c.Total_Order_Cost__c (header total)
+     */
+    public static void calculateTotal(
+        List<Order_Item__c> newItems,
+        List<Order_Item__c> oldItems,
+        Boolean isInsert,
+        Boolean isUpdate,
+        Boolean isDelete,
+        Boolean isUndelete
+    ){
+        Set<Id> poIds = new Set<Id>();
+
+        // Collect affected Purchase Order ids (from new and/or old rows)
+        if (isInsert || isUpdate || isUndelete) {
+            for (Order_Item__c oi : newItems) {
+                if (oi.Purchase_Order__c != null) poIds.add(oi.Purchase_Order__c);
+            }
+        }
+        if (isUpdate || isDelete) {
+            for (Order_Item__c oi : oldItems) {
+                if (oi.Purchase_Order__c != null) poIds.add(oi.Purchase_Order__c);
+            }
+        }
+        if (poIds.isEmpty()) return;
+
+        // Sum line Amounts by Purchase Order
+        Map<Id, Decimal> totalsByPO = new Map<Id, Decimal>();
+        for (AggregateResult ar :
+            [SELECT Purchase_Order__c poId, SUM(Amount__c) sumAmt
+               FROM Order_Item__c
+              WHERE Purchase_Order__c IN :poIds
+              GROUP BY Purchase_Order__c]
+        ){
+            totalsByPO.put((Id)ar.get('poId'), (Decimal)ar.get('sumAmt'));
+        }
+
+        // Prepare header updates; any PO not returned by the query gets 0
+        List<Purchase_Order__c> toUpdate = new List<Purchase_Order__c>();
+        for (Id poId : poIds) {
+            Decimal total = totalsByPO.containsKey(poId) ? totalsByPO.get(poId) : 0;
+            toUpdate.add(new Purchase_Order__c(
+                Id = poId,
+                Total_Order_Cost__c = total
+            ));
+        }
+        if (!toUpdate.isEmpty()) update toUpdate;
+    }
+}
+
+//CalculateTotalAmountHandlerTest
+
+@IsTest
+private class CalculateTotalAmountHandlerTest {
+
+    @IsTest
+    static void testTotalsInsertUpdateDelete() {
+        // Create a Supplier & Purchase Order minimal data if required by your validation rules
+        Supplier__c sup = new Supplier__c(Supplier_ID__c = 'SUP-1', Supplier_Name__c = 'ACME');
+        insert sup;
+
+        Purchase_Order__c po = new Purchase_Order__c(
+            Name = 'PO-1',
+            Supplier_ID__c = sup.Id,
+            Order_Date__c = Date.today()
+        );
+        insert po;
+
+        // Insert two order items
+        Order_Item__c oi1 = new Order_Item__c(
+            Name = 'OI-1', Purchase_Order__c = po.Id, Amount__c = 100
+        );
+        Order_Item__c oi2 = new Order_Item__c(
+            Name = 'OI-2', Purchase_Order__c = po.Id, Amount__c = 50
+        );
+        insert new List<Order_Item__c>{oi1, oi2};
+
+        po = [SELECT Total_Order_Cost__c FROM Purchase_Order__c WHERE Id = :po.Id];
+        System.assertEquals(150, po.Total_Order_Cost__c, 'Total after insert');
+
+        // Update amounts
+        oi1.Amount__c = 120;
+        update oi1;
+
+        po = [SELECT Total_Order_Cost__c FROM Purchase_Order__c WHERE Id = :po.Id];
+        System.assertEquals(170, po.Total_Order_Cost__c, 'Total after update');
+
+        // Delete a line
+        delete oi2;
+
+        po = [SELECT Total_Order_Cost__c FROM Purchase_Order__c WHERE Id = :po.Id];
+        System.assertEquals(120, po.Total_Order_Cost__c, 'Total after delete');
+
+        // Delete last line -> total should be 0
+        delete oi1;
+
+        po = [SELECT Total_Order_Cost__c FROM Purchase_Order__c WHERE Id = :po.Id];
+        System.assertEquals(0, po.Total_Order_Cost__c, 'Total after removing all lines');
+    }
+}
